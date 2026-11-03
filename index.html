@@ -7,138 +7,19 @@
 <meta name="theme-color" content="#14213D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="עוד שקל">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<style>
-  :root { --ink: #14213D; --ground: #F1F4FB; --amber: #FFB703; --blue: #1F4FD8; --muted: #46516F; }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100dvh; padding: max(24px, env(safe-area-inset-top)) 20px 24px; display: flex; flex-direction: column; justify-content: center; gap: 16px; background: var(--ground); color: var(--ink); font-family: Rubik, system-ui, -apple-system, sans-serif; }
-  h1 { margin: 0; font-size: 32px; text-align: center; }
-  p { margin: 0; line-height: 1.5; }
-  .card { padding: 18px; border-radius: 22px; background: #FFFFFF; display: flex; flex-direction: column; gap: 10px; }
-  button { width: 100%; min-height: 56px; border: 0; border-radius: 18px; background: var(--amber); color: var(--ink); font: inherit; font-size: 18px; font-weight: 700; }
-  button.quiet { min-height: 48px; background: #DDE3F2; font-size: 16px; font-weight: 500; }
-  button:disabled { opacity: .6; }
-  .fields { display: flex; flex-direction: column; gap: 8px; }
-  label { font-weight: 500; }
-  input { width: 100%; min-height: 48px; padding: 10px 12px; border: 2px solid #8290B3; border-radius: 12px; background: #FFFFFF; color: var(--ink); font: inherit; font-size: 16px; }
-  .fields button { margin-top: 8px; }
-  .row { display: flex; justify-content: space-between; gap: 12px; }
-  .ok { font-weight: 700; }
-  .ok::before { content: "✓ "; }
-  .bad { font-weight: 700; }
-  .bad::before { content: "! "; }
-  .wait::before { content: "… "; }
-  #error { color: var(--ink); font-size: 14px; direction: ltr; text-align: left; overflow-wrap: anywhere; }
-  [hidden] { display: none !important; }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&family=Secular+One&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
-  <h1>עוד שקל לילד</h1>
-
-  <section class="card" id="signed-out">
-    <p>בדיקת כניסה לפני שמתחילים לבנות.</p>
-    <form id="sign-in-form" class="fields">
-      <label for="email">מייל</label>
-      <input id="email" type="email" autocomplete="username" inputmode="email" dir="ltr" required>
-      <label for="password">סיסמה</label>
-      <input id="password" type="password" autocomplete="current-password" dir="ltr" required>
-      <button id="sign-in" type="submit">כניסה</button>
-    </form>
-  </section>
-
-  <section class="card" id="signed-in" hidden>
-    <p>שלום <strong id="who"></strong></p>
-    <button id="check" type="button">בדיקת חיבור לנתונים</button>
-    <button id="sign-out" class="quiet" type="button">התנתקות</button>
-  </section>
-
-  <section class="card">
-    <div class="row"><span>מצב</span><span id="mode"></span></div>
-    <p id="status" class="wait" role="status">טוען</p>
-    <p id="error" hidden></p>
-  </section>
-
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-  import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-  import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
-
-  // This config identifies the project and is public by design.
-  // Access to data is enforced by the Firestore security rules.
-  const firebaseConfig = {
-    apiKey: "AIzaSyCaGcDO83pldbO-AuQDzA8wzsGFnNwwwTw",
-    authDomain: "odshekel1.firebaseapp.com",
-    projectId: "odshekel1",
-    storageBucket: "odshekel1.firebasestorage.app",
-    messagingSenderId: "455176460904",
-    appId: "1:455176460904:web:d55a936fdc06be7b4879dd"
-  };
-
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-  const $ = (id) => document.getElementById(id);
-
-  const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-  $("mode").textContent = standalone ? "מסך הבית" : "דפדפן";
-
-  function setStatus(text, kind) {
-    $("status").textContent = text;
-    $("status").className = kind;
-  }
-
-  function showError(err) {
-    $("error").textContent = (err && (err.code || err.message)) || String(err);
-    $("error").hidden = false;
-  }
-
-  function clearError() {
-    $("error").hidden = true;
-  }
-
-  onAuthStateChanged(auth, (user) => {
-    $("signed-out").hidden = !!user;
-    $("signed-in").hidden = !user;
-    $("who").textContent = user ? user.email : "";
-    setStatus(user ? "הכניסה הצליחה" : "לא מחובר", user ? "ok" : "wait");
-  });
-
-  $("sign-in-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    clearError();
-    $("sign-in").disabled = true;
-    setStatus("מתחבר", "wait");
-    try {
-      await signInWithEmailAndPassword(auth, $("email").value.trim(), $("password").value);
-    } catch (err) {
-      setStatus("הכניסה נכשלה", "bad");
-      showError(err);
-    } finally {
-      $("sign-in").disabled = false;
-    }
-  });
-
-  $("check").addEventListener("click", async () => {
-    clearError();
-    $("check").disabled = true;
-    setStatus("בודק", "wait");
-    try {
-      const ref = doc(db, "connectionChecks", auth.currentUser.uid);
-      await setDoc(ref, { checkedAt: serverTimestamp() });
-      const snap = await getDoc(ref);
-      setStatus(snap.exists() ? "הנתונים מחוברים ומאובטחים" : "הקריאה לא החזירה נתונים", snap.exists() ? "ok" : "bad");
-    } catch (err) {
-      setStatus("אין גישה לנתונים", "bad");
-      showError(err);
-    } finally {
-      $("check").disabled = false;
-    }
-  });
-
-  $("sign-out").addEventListener("click", () => signOut(auth));
-</script>
+  <main id="app"><p class="quiet">טוען…</p></main>
+  <nav class="nav" id="nav" hidden><div></div></nav>
+  <div id="layer"></div>
+  <script type="module" src="app.js?v=2"></script>
 </body>
 </html>
