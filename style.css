@@ -61,6 +61,13 @@ textarea.input { min-height: 180px; direction: ltr; font-family: ui-monospace, m
 .option.on { border-color: var(--blue); }
 .toast { position: fixed; z-index: 20; left: 18px; right: 18px; bottom: calc(82px + env(safe-area-inset-bottom)); max-width: 484px; margin: 0 auto; padding: 12px 16px; border-radius: 14px; background: var(--ink); color: #FFF; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .toast button { min-height: 40px; padding: 0 8px; border: 0; background: transparent; color: var(--amber); font-weight: 700; }
+details.group { border-radius: 18px; background: var(--card); }
+details.group summary { min-height: 56px; padding: 8px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; font-weight: 700; list-style: none; cursor: pointer; }
+details.group summary::-webkit-details-marker { display: none; }
+details.group summary::after { content: "+"; color: var(--blue); font-size: 22px; }
+details.group[open] summary::after { content: "−"; }
+details.group summary .sum { margin-inline-start: auto; font-weight: 500; }
+details.group .list { padding: 0 18px 8px; }
 .center { min-height: 80dvh; justify-content: center; }
 .error { font-size: 14px; direction: ltr; text-align: left; overflow-wrap: anywhere; }
 [hidden] { display: none !important; }

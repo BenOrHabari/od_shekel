@@ -5,8 +5,8 @@ import {
   addDoc, onSnapshot, query, where, getDocs, writeBatch, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import {
-  cycleIdOf, cycleRange, cycleProgress, isTrial, summarize, forecast, coverOptions, plannedTotal, money
-} from "./logic.js?v=2";
+  cycleIdOf, cycleRange, cycleProgress, isTrial, summarize, forecast, coverOptions, plannedTotal, money, FIXED_GROUPS, fixedGroupOf
+} from "./logic.js?v=3";
 
 // This config identifies the project and is public by design.
 // Access to data is enforced by the Firestore security rules.
@@ -34,7 +34,7 @@ const TYPE_HELP = {
 
 const state = {
   user: null, household: undefined, categories: [], month: undefined, expenses: [], covers: [],
-  view: "home", tab: "ongoing", pickedCategory: null, cycleId: cycleIdOf(new Date())
+  view: "home", tab: "ongoing", pickedCategory: null, openGroups: new Set(), cycleId: cycleIdOf(new Date())
 };
 let unsubscribers = [];
 
@@ -165,6 +165,8 @@ function viewHome() {
     el("p", { class: "display big", text: `עד ${money(summary.canSave)}` }),
     el("p", { class: "soft", text: predicted === null ? "התחזית תופיע אחרי כמה ימים" : predicted > 0 ? `בקצב הנוכחי תחסכו כ-${money(predicted)}` : `נשארו ${progress.left} ימים, עדיין אפשר לשנות כיוון` })));
 
+  nodes.push(el("button", { class: "primary", type: "button", text: "הוספת הוצאה", onclick: () => go("expenses", "ongoing") }));
+
   if (missingBills.length && progress.left <= 5) nodes.push(el("button", {
     class: "alert", style: "background:#FFFFFF;border:2px solid #1F4FD8", type: "button", onclick: () => go("expenses", "bill")
   }, el("span", { text: `${missingBills.length} חשבונות מחכים לסכום` }), el("span", { text: "להזנה" })));
@@ -179,7 +181,6 @@ function viewHome() {
         style: `display:block;height:100%;width:${Math.min(100, line.available ? (line.spent / line.available) * 100 : 0)}%;background:${line.over > 0 ? "#14213D" : "#1F4FD8"}`
       }))))));
 
-  nodes.push(el("button", { class: "primary", type: "button", text: "הוספת הוצאה", onclick: () => go("expenses", "ongoing") }));
   return nodes;
 }
 
@@ -260,11 +261,18 @@ function viewExpenses() {
 }
 
 function fixedList(summary) {
-  const fixed = summary.lines.filter((l) => l.type === "fixed");
-  const total = fixed.reduce((s, l) => s + l.spent, 0);
+  const fixed = state.categories.filter((c) => c.type === "fixed");
+  const total = fixed.reduce((sum, c) => sum + c.amount, 0);
+  const groups = FIXED_GROUPS.map((name) => ({ name, items: fixed.filter((c) => fixedGroupOf(c) === name) })).filter((g) => g.items.length);
   return [
-    el("p", { class: "quiet", text: "יורדות לבד כל חודש, עד שתשנו אותן" }),
-    el("section", { class: "card list" }, ...fixed.map((line) => el("div", { class: "row" }, el("span", { text: line.name }), el("span", { text: money(line.amount) })))),
+    el("p", { class: "quiet", text: "יורדות לבד כל חודש. לחיצה על שורה פותחת עריכה." }),
+    ...groups.map((group) => el("details", { class: "group", ...(state.openGroups.has(group.name) ? { open: "" } : {}), ontoggle: (event) => {
+      if (event.currentTarget.open) state.openGroups.add(group.name); else state.openGroups.delete(group.name);
+    } },
+      el("summary", {}, el("span", { text: group.name }), el("span", { class: "sum", text: money(group.items.reduce((sum, c) => sum + c.amount, 0)) })),
+      el("div", { class: "list" }, ...group.items.map((item) => el("button", { class: "row", type: "button", onclick: () => editCategory(item) },
+        el("span", { text: item.name }), el("span", { text: money(item.amount) })))))),
+    el("button", { class: "dashed", type: "button", text: "הוספת הוצאה קבועה", onclick: () => editCategory({ name: "", amount: 0, type: "fixed", freq: "month", isNew: true }) }),
     el("p", { style: "font-weight:700;text-align:center", text: `סך הכול ${money(total)} בחודש` })
   ];
 }
@@ -350,12 +358,17 @@ function viewCategories() {
 function editCategory(item) {
   let type = item.type;
   let freq = item.freq || "month";
+  let group = item.type === "fixed" ? fixedGroupOf(item) : "אחר";
   const name = el("input", { id: "cat-name", class: "input", value: item.name, placeholder: "שם" });
   const amount = el("input", { id: "cat-amount", class: "input", inputmode: "numeric", value: item.amount || "", placeholder: "₪" });
   const error = el("p", { class: "note", hidden: true, role: "alert" });
   const typeTabs = el("div", { class: "tabs" });
   const freqTabs = el("div", { class: "tabs", style: "grid-template-columns:repeat(2,minmax(0,1fr))" });
+  const groupChips = el("div", { class: "chips" });
+  const groupField = el("div", { class: "field" }, el("span", { style: "font-weight:700", text: "קבוצה" }), groupChips);
   const paint = () => {
+    groupChips.replaceChildren(...FIXED_GROUPS.map((key) => el("button", { type: "button", class: `chip${group === key ? " on" : ""}`, text: key, onclick: () => { group = key; paint(); } })));
+    groupField.hidden = type !== "fixed";
     typeTabs.replaceChildren(...Object.keys(TYPES).map((key) => el("button", { type: "button", class: type === key ? "on" : "", text: TYPE_ONE[key], onclick: () => { type = key; paint(); } })));
     freqTabs.replaceChildren(...[["month", "כל חודש"], ["two", "כל חודשיים"]].map(([key, label]) => el("button", { type: "button", class: freq === key ? "on" : "", text: label, onclick: () => { freq = key; paint(); } })));
     freqTabs.hidden = type !== "bill";
@@ -372,7 +385,7 @@ function editCategory(item) {
       error.hidden = false;
       return;
     }
-    const data = { name: cleanName, amount: value, type, freq: type === "bill" ? freq : "month" };
+    const data = { name: cleanName, amount: value, type, freq: type === "bill" ? freq : "month", group: type === "fixed" ? group : "" };
     closeDialog();
     if (item.isNew) await safeWrite(addDoc(col("categories"), { ...data, order: Date.now() }));
     else await safeWrite(updateDoc(doc(col("categories"), item.id), data));
@@ -393,10 +406,31 @@ function editCategory(item) {
   openDialog(el("h2", { text: item.isNew ? "הוספה" : "עריכה" }),
     el("div", { class: "field" }, el("label", { for: "cat-name", text: "שם" }), name),
     el("div", { class: "field" }, el("span", { style: "font-weight:700", text: "סוג" }), typeTabs),
-    el("div", { class: "field" }, el("label", { for: "cat-amount", text: "סכום ממוצע לחודש" }), amount), freqTabs, error,
+    el("div", { class: "field" }, el("label", { for: "cat-amount", text: "סכום לחודש" }), amount), freqTabs, groupField, error,
     el("button", { class: "primary", type: "button", text: "שמירה", onclick: save }),
     !item.isNew && el("button", { class: "secondary", type: "button", text: "הסרה", onclick: remove }),
     el("button", { class: "secondary", type: "button", text: "ביטול", onclick: closeDialog }));
+}
+
+async function testNotification() {
+  try {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      toast("הדפדפן הזה לא תומך בהתראות. פתחו מהסמל במסך הבית.");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("ההתראות לא אושרו. אפשר לאשר בהגדרות האייפון.");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const show = (body) => registration.showNotification("עוד שקל לילד", { body, icon: "icon-192.png", badge: "icon-192.png", tag: `test-${Date.now()}` });
+    await show("הסיכום השבועי שלכם מחכה");
+    toast("נשלחה התראה. עוד אחת תגיע בעוד 6 שניות.");
+    setTimeout(() => show("חסר חשבון אחד לסגירת החודש"), 6000);
+  } catch (err) {
+    toast(`ההתראה נכשלה: ${err.message}`);
+  }
 }
 
 function viewSettings() {
@@ -427,6 +461,7 @@ function viewSettings() {
       el("button", { class: "primary", type: "button", text: "שמירה", onclick: save })),
     el("button", { class: "secondary", type: "button", text: "עריכת הוצאות וקטגוריות", onclick: () => go("categories") })];
   if (isTrial(new Date())) nodes.push(el("button", { class: "secondary", type: "button", text: "איפוס נתוני הניסיון", onclick: askReset }));
+  nodes.push(el("button", { class: "secondary", type: "button", text: "שליחת התראת בדיקה", onclick: testNotification }));
   nodes.push(el("button", { class: "secondary", type: "button", text: "התנתקות", onclick: () => signOut(auth) }));
   return nodes;
 }
@@ -529,6 +564,8 @@ function render() {
   const views = { home: viewHome, expenses: viewExpenses, categories: viewCategories, settings: viewSettings };
   show(views[state.view](), false, true);
 }
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
 onAuthStateChanged(auth, (user) => {
   state.user = user;

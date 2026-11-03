@@ -95,4 +95,18 @@ export function coverOptions(summary, targetId) {
   return options;
 }
 
+export const FIXED_GROUPS = ["בית", "קופות", "ביטוחים ובריאות", "תקשורת ובידור", "כלים וענן", "ספורט וחברות", "אחר"];
+
+export function fixedGroupOf(item) {
+  if (item.group) return item.group;
+  const name = item.name || "";
+  if (/קופ/.test(name)) return "קופות";
+  if (/ארנונה|ועד/.test(name)) return "בית";
+  if (/ביטוח|מכבי|כללית|מאוחדת/.test(name)) return "ביטוחים ובריאות";
+  if (/כושר|ארגון/.test(name)) return "ספורט וחברות";
+  if (/סלקום|טלוויזיה|נטפליקס|HBO|Spotify/i.test(name)) return "תקשורת ובידור";
+  if (/GPT|Claude|Splice|Canva|Google|Apple|iCloud/i.test(name)) return "כלים וענן";
+  return "אחר";
+}
+
 export const money = (n) => `${Math.round(n).toLocaleString("en-US")} ₪`;
