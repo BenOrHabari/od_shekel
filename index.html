@@ -21,6 +21,10 @@
   button { width: 100%; min-height: 56px; border: 0; border-radius: 18px; background: var(--amber); color: var(--ink); font: inherit; font-size: 18px; font-weight: 700; }
   button.quiet { min-height: 48px; background: #DDE3F2; font-size: 16px; font-weight: 500; }
   button:disabled { opacity: .6; }
+  .fields { display: flex; flex-direction: column; gap: 8px; }
+  label { font-weight: 500; }
+  input { width: 100%; min-height: 48px; padding: 10px 12px; border: 2px solid #8290B3; border-radius: 12px; background: #FFFFFF; color: var(--ink); font: inherit; font-size: 16px; }
+  .fields button { margin-top: 8px; }
   .row { display: flex; justify-content: space-between; gap: 12px; }
   .ok { font-weight: 700; }
   .ok::before { content: "✓ "; }
@@ -36,7 +40,13 @@
 
   <section class="card" id="signed-out">
     <p>בדיקת כניסה לפני שמתחילים לבנות.</p>
-    <button id="sign-in" type="button">כניסה עם גוגל</button>
+    <form id="sign-in-form" class="fields">
+      <label for="email">מייל</label>
+      <input id="email" type="email" autocomplete="username" inputmode="email" dir="ltr" required>
+      <label for="password">סיסמה</label>
+      <input id="password" type="password" autocomplete="current-password" dir="ltr" required>
+      <button id="sign-in" type="submit">כניסה</button>
+    </form>
   </section>
 
   <section class="card" id="signed-in" hidden>
@@ -53,7 +63,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, browserLocalPersistence, setPersistence } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+  import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
   import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
   // This config identifies the project and is public by design.
@@ -96,13 +106,13 @@
     setStatus(user ? "הכניסה הצליחה" : "לא מחובר", user ? "ok" : "wait");
   });
 
-  $("sign-in").addEventListener("click", async () => {
+  $("sign-in-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
     clearError();
     $("sign-in").disabled = true;
     setStatus("מתחבר", "wait");
     try {
-      await setPersistence(auth, browserLocalPersistence);
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      await signInWithEmailAndPassword(auth, $("email").value.trim(), $("password").value);
     } catch (err) {
       setStatus("הכניסה נכשלה", "bad");
       showError(err);
