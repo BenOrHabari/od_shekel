@@ -1,4 +1,4 @@
-import { cycleIdOf } from "../logic.js?v=3";
+import { cycleIdOf } from "../logic.js?v=4";
 
 const KEY = "od-shekel-demo";
 const ROOT = "households/main";
@@ -46,13 +46,15 @@ export const doc = (parent, ...parts) => {
   return { path: parts.join("/") };
 };
 export const collection = (reference, name) => ({ path: `${reference.path}/${name}`, isCollection: true });
-export const where = (field, operator, value) => ({ field, value });
+export const where = (field, operator, value) => ({ field, operator, value });
 export const query = (reference, filter) => ({ ...reference, filter });
 
 const list = (target) => [...data.entries()]
   .filter(([path, value]) => {
     if (!path.startsWith(`${target.path}/`) || path.slice(target.path.length + 1).includes("/")) return false;
-    return !target.filter || value[target.filter.field] === target.filter.value;
+    if (!target.filter) return true;
+    const actual = value[target.filter.field];
+    return target.filter.operator === "in" ? target.filter.value.includes(actual) : actual === target.filter.value;
   })
   .map(([path, value]) => ({ id: path.split("/").pop(), ref: { path }, data: () => value }));
 

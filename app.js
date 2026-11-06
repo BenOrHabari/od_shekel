@@ -5,8 +5,9 @@ import {
   addDoc, onSnapshot, query, where, getDocs, writeBatch, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import {
-  cycleIdOf, cycleRange, cycleProgress, isTrial, summarize, forecast, coverOptions, plannedTotal, money, FIXED_GROUPS, fixedGroupOf
-} from "./logic.js?v=3";
+  cycleIdOf, cycleRange, cycleProgress, isTrial, summarize, forecast, coverOptions, plannedTotal, money, FIXED_GROUPS, fixedGroupOf,
+  shiftCycle, closeResult, unpaidBills, bankTasks, SAFETY_TARGET
+} from "./logic.js?v=4";
 
 // This config identifies the project and is public by design.
 // Access to data is enforced by the Firestore security rules.
@@ -33,7 +34,8 @@ const TYPE_HELP = {
 };
 
 const state = {
-  user: null, household: undefined, categories: [], month: undefined, expenses: [], covers: [],
+  user: null, household: undefined, categories: [], months: {}, monthsLoaded: false, allExpenses: [], allCovers: [],
+  month: undefined, expenses: [], covers: [], closeId: null,
   view: "home", tab: "ongoing", pickedCategory: null, openGroups: new Set(), cycleId: cycleIdOf(new Date())
 };
 let unsubscribers = [];
@@ -75,41 +77,55 @@ function stopListening() {
   unsubscribers = [];
 }
 
+function syncCurrent() {
+  state.month = state.monthsLoaded ? (state.months[state.cycleId] || null) : undefined;
+  state.expenses = state.allExpenses.filter((e) => e.monthId === state.cycleId);
+  state.covers = state.allCovers.filter((c) => c.monthId === state.cycleId);
+}
+
 function listen() {
   stopListening();
-  const id = state.cycleId;
+  const ids = [state.cycleId, shiftCycle(state.cycleId, -1)];
   const onError = (err) => { state.loadError = err.code || err.message; render(); };
+  const refresh = () => { syncCurrent(); ensureMonth(); render(); };
   unsubscribers.push(onSnapshot(home, (snap) => {
     state.household = snap.exists() ? snap.data() : null;
-    ensureMonth();
-    render();
+    refresh();
   }, onError));
   unsubscribers.push(onSnapshot(col("categories"), (snap) => {
     state.categories = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => !c.archived)
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    ensureMonth();
-    render();
+    refresh();
   }, onError));
-  unsubscribers.push(onSnapshot(doc(home, "months", id), (snap) => {
-    state.month = snap.exists() ? snap.data() : null;
-    ensureMonth();
-    render();
+  unsubscribers.push(onSnapshot(col("months"), (snap) => {
+    state.months = Object.fromEntries(snap.docs.map((d) => [d.id, d.data()]));
+    state.monthsLoaded = true;
+    refresh();
   }, onError));
-  unsubscribers.push(onSnapshot(query(col("expenses"), where("monthId", "==", id)), (snap) => {
-    state.expenses = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  unsubscribers.push(onSnapshot(query(col("expenses"), where("monthId", "in", ids)), (snap) => {
+    state.allExpenses = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (b.spentAt || 0) - (a.spentAt || 0));
-    render();
+    refresh();
   }, onError));
-  unsubscribers.push(onSnapshot(query(col("covers"), where("monthId", "==", id)), (snap) => {
-    state.covers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    render();
+  unsubscribers.push(onSnapshot(query(col("covers"), where("monthId", "in", ids)), (snap) => {
+    state.allCovers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    refresh();
   }, onError));
 }
 
-const snapshotBudgets = () => state.categories.map(({ id, name, type, amount, freq }) => ({ id, name, type, amount, freq: freq || "month" }));
+function checkCycle() {
+  const id = cycleIdOf(new Date());
+  if (id === state.cycleId || !state.user) return;
+  state.cycleId = id;
+  state.view = "home";
+  syncCurrent();
+  listen();
+}
+
+const snapshotBudgets = () => state.categories.map(({ id, name, type, amount, freq, group }) => ({ id, name, type, amount, freq: freq || "month", group: group || "" }));
 
 function ensureMonth() {
-  if (state.month !== null || !state.household || !state.categories.length) return;
+  if (!state.monthsLoaded || state.month || !state.household || !state.categories.length) return;
   safeWrite(setDoc(doc(home, "months", state.cycleId), {
     budgets: snapshotBudgets(), income: state.household.income, deposit: state.household.deposit, createdAt: serverTimestamp()
   }));
@@ -118,12 +134,38 @@ function ensureMonth() {
 const memberName = (uid) => state.household?.members?.[uid] || "";
 const partnerUid = () => Object.keys(state.household?.members || {}).find((uid) => uid !== state.user.uid);
 
-function currentSummary() {
-  const month = state.month;
+function monthSummary(id, depth = 0) {
+  const month = state.months[id];
+  if (!month) return null;
+  const prev = state.months[shiftCycle(id, -1)];
+  let carry = {};
+  if (prev?.closed) carry = prev.closed.unpaid || {};
+  else if (prev && depth === 0) carry = unpaidBills(monthSummary(shiftCycle(id, -1), 1));
   return summarize({
-    budgets: month.budgets, expenses: state.expenses, covers: state.covers, income: month.income, deposit: month.deposit
+    budgets: month.budgets, income: month.income, deposit: month.deposit, carry,
+    expenses: state.allExpenses.filter((e) => e.monthId === id),
+    covers: state.allCovers.filter((c) => c.monthId === id)
   });
 }
+
+const currentSummary = () => monthSummary(state.cycleId);
+const prevId = () => shiftCycle(state.cycleId, -1);
+const pendingPrev = () => {
+  const prev = state.months[prevId()];
+  return prev && !prev.closed ? prev : null;
+};
+
+function prevResult() {
+  const prev = pendingPrev();
+  return prev ? closeResult(monthSummary(prevId()), state.household.safety) : null;
+}
+
+function currentTasks() {
+  const done = state.month.bank || {};
+  return bankTasks(state.month, prevResult()).map((task) => done[task.id] ? { ...task, ...done[task.id], done: true } : task);
+}
+
+const savedTotal = () => Object.values(state.months).reduce((sum, m) => sum + (m.bank?.invest?.amount || 0), 0);
 
 async function applyCategoriesNow() {
   const trial = isTrial(new Date());
@@ -159,6 +201,25 @@ function viewHome() {
   summary.overspends.forEach((line) => nodes.push(el("button", {
     class: "alert", type: "button", onclick: () => openCover(line.id)
   }, el("span", { text: `חריגה של ${money(line.over)} ב${line.name}` }), el("span", { text: "לכיסוי" }))));
+
+  const prev = pendingPrev();
+  if (prev) monthSummary(prevId()).overspends.forEach((line) => nodes.push(el("button", {
+    class: "alert", type: "button", onclick: () => openCover(line.id, 0, prevId())
+  }, el("span", { text: `חריגה בחודש הקודם: ${money(line.over)} ב${line.name}` }), el("span", { text: "לכיסוי" }))));
+
+  if (!isTrial(now)) {
+    const tasks = currentTasks();
+    const open = tasks.filter((t) => !t.done);
+    if (open.length || prev) nodes.push(el("button", {
+      class: "alert", style: "background:#14213D;color:#FFFFFF", type: "button", onclick: () => go("bank")
+    }, el("span", { text: open.length ? `משימות בבנק: ${money(open.reduce((s, t) => s + t.amount, 0))} להעביר` : "כל ההעברות בוצעו, אפשר לסגור חודש" }),
+    el("span", { style: "color:#FFB703", text: "לפתיחה" })));
+  }
+
+  const lastClosed = state.months[prevId()]?.closed;
+  if (lastClosed && progress.elapsed <= 7) nodes.push(el("button", {
+    class: "row card", type: "button", onclick: () => { state.closeId = prevId(); go("close"); }
+  }, el("strong", { text: lastClosed.kid ? `החודש הקודם נסגר: עוד ${money(lastClosed.kid)} לילד` : "החודש הקודם נסגר" }), el("span", { text: "לסיכום" })));
 
   nodes.push(el("section", { class: "hero" },
     el("p", { class: "soft", text: "עוד אפשר לחסוך החודש" }),
@@ -271,7 +332,8 @@ function fixedList(summary) {
     } },
       el("summary", {}, el("span", { text: group.name }), el("span", { class: "sum", text: money(group.items.reduce((sum, c) => sum + c.amount, 0)) })),
       el("div", { class: "list" }, ...group.items.map((item) => el("button", { class: "row", type: "button", onclick: () => editCategory(item) },
-        el("span", { text: item.name }), el("span", { text: money(item.amount) })))))),
+        el("span", { text: item.name }), el("span", { text: money(item.amount) }))),
+        group.name === "קופות" && el("div", { class: "row" }, el("span", { text: "קופת ביטחון" }), el("span", { class: "quiet", text: "לפי היתרה" }))))),
     el("button", { class: "dashed", type: "button", text: "הוספת הוצאה קבועה", onclick: () => editCategory({ name: "", amount: 0, type: "fixed", freq: "month", isNew: true }) }),
     el("p", { style: "font-weight:700;text-align:center", text: `סך הכול ${money(total)} בחודש` })
   ];
@@ -299,8 +361,8 @@ function askDelete(item) {
     el("button", { class: "secondary", type: "button", text: "ביטול", onclick: closeDialog }));
 }
 
-function openCover(lineId, overOverride) {
-  const summary = currentSummary();
+function openCover(lineId, overOverride, monthId = state.cycleId) {
+  const summary = monthSummary(monthId);
   const line = summary.lines.find((l) => l.id === lineId);
   const over = Math.max(line.over, overOverride || 0);
   const options = coverOptions(summary, lineId);
@@ -317,9 +379,9 @@ function openCover(lineId, overOverride) {
   const confirm = el("button", { class: "primary", type: "button", disabled: true, text: "מכסים עכשיו", onclick: async () => {
     const amount = Math.min(over, chosen.left);
     await safeWrite(addDoc(col("covers"), {
-      monthId: state.cycleId, fromId: chosen.id, fromName: chosen.name, toId: lineId, amount, by: state.user.uid, createdAt: serverTimestamp()
+      monthId, fromId: chosen.id, fromName: chosen.name, toId: lineId, amount, by: state.user.uid, createdAt: serverTimestamp()
     }));
-    if (over - amount > 0) { setTimeout(() => openCover(lineId, over - amount), 300); return; }
+    if (over - amount > 0) { setTimeout(() => openCover(lineId, over - amount, monthId), 300); return; }
     shareCover(line.name, over, chosen.name);
   } });
   const empty = options.length === 0;
@@ -412,6 +474,89 @@ function editCategory(item) {
     el("button", { class: "secondary", type: "button", text: "ביטול", onclick: closeDialog }));
 }
 
+function viewBank() {
+  const trial = isTrial(new Date());
+  const tasks = currentTasks();
+  const prev = pendingPrev();
+  const prevSummary = prev ? monthSummary(prevId()) : null;
+  const blocked = prevSummary && prevSummary.openOver > 0;
+  const allDone = tasks.every((t) => t.done);
+  const total = tasks.reduce((s, t) => s + t.amount, 0);
+  const nodes = [header("משימות בבנק", trial ? "יופיעו ב-15 בנובמבר" : periodLabel())];
+  if (trial) nodes.push(el("p", { class: "note", text: "זו תצוגה מקדימה. ב-15 בנובמבר מסמנים כאן את ההעברות הראשונות." }));
+  nodes.push(el("section", { class: "hero" }, el("p", { class: "soft", text: "להעביר החודש מהעו״ש" }), el("p", { class: "display big", text: money(total) })));
+
+  const toggle = (task) => {
+    if (trial) return;
+    const bank = { ...(state.month.bank || {}) };
+    if (bank[task.id]) delete bank[task.id];
+    else bank[task.id] = { amount: task.amount, kid: task.kid || 0, by: state.user.uid, at: Date.now() };
+    safeWrite(updateDoc(doc(home, "months", state.cycleId), { bank }));
+  };
+  nodes.push(el("section", { class: "card list" }, ...tasks.map((task) => el("button", {
+    class: "row", type: "button", role: "checkbox", "aria-checked": String(!!task.done), disabled: trial,
+    onclick: () => toggle(task)
+  }, el("span", { style: "display:flex;align-items:center;gap:12px" },
+    el("span", { "aria-hidden": "true", style: `width:28px;height:28px;flex:none;border-radius:8px;border:2px solid #1F4FD8;display:flex;align-items:center;justify-content:center;font-weight:700;color:#FFFFFF;background:${task.done ? "#1F4FD8" : "#FFFFFF"}`, text: task.done ? "✓" : "" }),
+    el("span", { class: "stack" }, el("strong", { text: task.label }), el("span", { class: "small", text: task.done ? `בוצע · ${memberName(task.by)}` : task.detail }))),
+  el("strong", { style: "white-space:nowrap", text: money(task.amount) })))));
+
+  if (blocked) nodes.push(el("p", { class: "note", text: `בחודש הקודם יש חריגה פתוחה של ${money(prevSummary.openOver)}. מכסים אותה במסך הבית, ואז אפשר לסגור.` }));
+  if (prev) {
+    nodes.push(el("button", { class: "primary", type: "button", disabled: trial || !allDone || blocked,
+      text: allDone ? "סוגרים חודש ומקבלים מדליות" : "המדליות נפתחות אחרי שכל ההעברות בוצעו", onclick: closePrevMonth }));
+  } else if (!trial) {
+    nodes.push(el("p", { class: "note", text: allDone ? "כל ההעברות בוצעו. הסגירה הראשונה תהיה בחודש הבא." : "אחרי ההעברות, סמנו כל שורה." }));
+  }
+  return nodes;
+}
+
+async function closePrevMonth() {
+  const id = prevId();
+  const prev = state.months[id];
+  if (!prev || prev.closed) return;
+  const result = closeResult(monthSummary(id), state.household.safety);
+  const bank = state.month.bank || {};
+  const kid = bank.invest ? bank.invest.kid || 0 : result.kid;
+  const safety = bank.safety ? bank.safety.amount : 0;
+  await safeWrite(updateDoc(doc(home, "months", id), {
+    closed: { at: Date.now(), by: state.user.uid, kid, safety, leftover: kid + safety, medals: result.medals, unpaid: result.unpaid, notes: {} }
+  }));
+  if (safety) await safeWrite(updateDoc(home, { safety: (Number(state.household.safety) || 0) + safety }));
+  state.closeId = id;
+  go("close");
+}
+
+function viewClose() {
+  const id = state.closeId;
+  const closed = state.months[id]?.closed;
+  if (!closed) return [header("סגירת חודש", ""), el("p", { class: "quiet", text: "החודש עוד לא נסגר" })];
+  const { start } = cycleRange(id);
+  const monthName = new Intl.DateTimeFormat("he-IL", { month: "long", year: "numeric" }).format(start);
+  const mine = closed.notes?.[state.user.uid] || "";
+  const partner = partnerUid();
+  const theirs = partner ? closed.notes?.[partner] : "";
+  const note = el("textarea", { id: "close-note", class: "input", style: "min-height:84px;direction:rtl;font-family:inherit;font-size:16px", placeholder: "משפט אחד ליומן" });
+  note.value = mine;
+  const saveNote = () => {
+    const notes = { ...(closed.notes || {}), [state.user.uid]: note.value.trim() };
+    safeWrite(updateDoc(doc(home, "months", id), { closed: { ...closed, notes } })).then(() => toast("נשמר ביומן"));
+  };
+  return [
+    header("סגרתם חודש", monthName, [el("button", { class: "pill", type: "button", text: "לבית", onclick: () => go("home") })]),
+    el("section", { class: "hero", style: "background:#FFB703;color:#14213D;align-items:center;text-align:center" },
+      el("p", { style: "font-weight:500", text: "המתנה של החודש" }),
+      el("p", { class: "display", style: "font-size:40px;line-height:1.15", text: closed.kid ? `עוד ${money(closed.kid)} לילד` : "ההפקדה נכנסה" }),
+      el("p", { text: closed.kid ? `חסכתם עד עכשיו ${money(savedTotal())}` : "החודש לא נשארה יתרה, ובכל זאת התקדמתם. ממשיכים!" })),
+    el("section", { class: "card" }, el("h2", { text: "המדליות של החודש" }),
+      ...(closed.medals.length ? closed.medals.map((m) => el("div", { class: "row" }, el("strong", { text: `מדליה: ${m.name}` }), el("span", { text: `${money(m.saved)} מתחת לתקציב` })))
+        : [el("p", { class: "quiet", text: "הפעם בלי מדליות. בחודש הבא יש הזדמנות חדשה." })])),
+    el("section", { class: "card" }, el("label", { for: "close-note", style: "font-weight:700", text: "מה תרצה לזכור מהחודש הזה?" }),
+      theirs && el("p", { text: `${memberName(partner)} כתב/ה: ״${theirs}״` }), note,
+      el("button", { class: "primary", type: "button", text: "שומרים ביומן", onclick: saveNote }))
+  ];
+}
+
 async function testNotification() {
   try {
     if (!("Notification" in window) || !("serviceWorker" in navigator)) {
@@ -459,6 +604,7 @@ function viewSettings() {
       el("div", { class: "field" }, el("label", { for: "income", text: "הכנסה בחודש הזה" }), income),
       el("div", { class: "field" }, el("label", { for: "deposit", text: "הפקדה קבועה לילד" }), deposit), error,
       el("button", { class: "primary", type: "button", text: "שמירה", onclick: save })),
+    el("button", { class: "secondary", type: "button", text: "משימות בבנק", onclick: () => go("bank") }),
     el("button", { class: "secondary", type: "button", text: "עריכת הוצאות וקטגוריות", onclick: () => go("categories") })];
   if (isTrial(new Date())) nodes.push(el("button", { class: "secondary", type: "button", text: "איפוס נתוני הניסיון", onclick: askReset }));
   nodes.push(el("button", { class: "secondary", type: "button", text: "שליחת התראת בדיקה", onclick: testNotification }));
@@ -561,9 +707,12 @@ function render() {
   if (state.household === undefined) return show([el("p", { class: "quiet", text: "טוען…" })], true, false);
   if (state.household === null) return show(viewSetup(), false, false);
   if (!state.month) return show([el("p", { class: "quiet", text: "מכין את החודש…" })], true, false);
-  const views = { home: viewHome, expenses: viewExpenses, categories: viewCategories, settings: viewSettings };
+  const views = { home: viewHome, expenses: viewExpenses, categories: viewCategories, settings: viewSettings, bank: viewBank, close: viewClose };
   show(views[state.view](), false, true);
 }
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkCycle(); });
+setInterval(checkCycle, 60000);
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
@@ -571,6 +720,8 @@ onAuthStateChanged(auth, (user) => {
   state.user = user;
   state.loadError = null;
   state.household = undefined;
+  state.months = {};
+  state.monthsLoaded = false;
   state.month = undefined;
   if (user) listen(); else stopListening();
   render();
