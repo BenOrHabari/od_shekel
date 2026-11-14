@@ -1,4 +1,4 @@
-import { cycleIdOf } from "../logic.js?v=4";
+import { cycleIdOf } from "../logic.js?v=5";
 
 const KEY = "od-shekel-demo";
 const ROOT = "households/main";

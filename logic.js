@@ -125,20 +125,114 @@ export function closeResult(summary, safetyBalance) {
   return { leftover, kid, safety: leftover - kid, kidRatio, medals, unpaid: unpaidBills(summary) };
 }
 
-export function bankTasks(month, prevResult) {
+export const VACATION_FULL = 8000;
+
+export function bankTasks(month, prevResult, funds = []) {
   const kid = prevResult ? prevResult.kid : 0;
   const deposit = Number(month.deposit) || 0;
-  const tasks = [{
-    id: "invest", label: "לקופת ההשקעה", kid,
-    detail: kid ? `${money(deposit)} הפקדה ו-${money(kid)} מתנה מהחודש הקודם` : "ההפקדה הקבועה לילד",
-    amount: deposit + kid
-  }];
-  month.budgets.filter((b) => b.type === "fixed" && fixedGroupOf(b) === "קופות")
-    .forEach((b) => tasks.push({ id: `fund-${b.id}`, label: `ל${b.name}`, detail: "העברה חודשית", amount: Number(b.amount) || 0 }));
+  const vacation = funds.find((f) => f.kind === "vacation");
+  const vacationFull = vacation && (Number(vacation.balance) || 0) >= VACATION_FULL;
+  const tasks = [];
+  let redirected = 0;
+  month.budgets.filter((b) => b.type === "fixed" && fixedGroupOf(b) === "קופות").forEach((b) => {
+    const amount = Number(b.amount) || 0;
+    if (vacationFull && /חופש/.test(b.name)) { redirected += amount; return; }
+    tasks.push({ id: `fund-${b.id}`, label: `ל${b.name}`, detail: "העברה חודשית", amount, fundKind: /חופש/.test(b.name) ? "vacation" : "" });
+  });
+  const parts = [`${money(deposit)} הפקדה`];
+  if (kid) parts.push(`${money(kid)} מתנה מהחודש הקודם`);
+  if (redirected) parts.push(`${money(redirected)} מקופת החופשות המלאה`);
+  tasks.unshift({ id: "invest", label: "לקופת ההשקעה", kid, redirected, detail: parts.join(", "), amount: deposit + kid + redirected, fundKind: "invest" });
   if (prevResult && prevResult.safety > 0) {
-    tasks.push({ id: "safety", label: "לקופת הביטחון", detail: "החלק שלה מהיתרה", amount: prevResult.safety });
+    tasks.push({ id: "safety", label: "לקופת הביטחון", detail: "החלק שלה מהיתרה", amount: prevResult.safety, fundKind: "safety" });
   }
   return tasks.filter((t) => t.amount > 0);
+}
+
+export const DEFAULT_STATIONS = [
+  { amount: 3000, name: "מחשב טוב למשחקי מחשב" },
+  { amount: 5000, name: "גיטרה חשמלית ראשונה" },
+  { amount: 10000, name: "טיול בר/בת מצווה מטורף" },
+  { amount: 15000, name: "לעזור לטיול אחרי צבא" },
+  { amount: 20000, name: "לטוס כולנו לסקי" },
+  { amount: 30000, name: "תואר ראשון - מכוסה!" },
+  { amount: 50000, name: "רכב חדש יהיה נחמד, לא?" },
+  { amount: 75000, name: "עזרנו ממש בחתונה" },
+  { amount: 100000, name: "דירה! (באום אל פחם…)" },
+  { amount: 150000, name: "דירה! (אולי בב״ש?)" },
+  { amount: 200000, name: "דירה! (בטוח בב״ש)" },
+  { amount: 500000, name: "אפשר לעבוד על כולם שזכינו בלוטו?" }
+];
+
+export const DEFAULT_FUNDS = [
+  { id: "invest", name: "קופת ההשקעה", kind: "invest", balance: 0 },
+  { id: "vacation", name: "קופת חופשות", kind: "vacation", balance: 0 },
+  { id: "safety", name: "קופת ביטחון", kind: "safety", balance: 0 }
+];
+
+export function stationProgress(stations, total) {
+  const sorted = [...stations].sort((a, b) => a.amount - b.amount);
+  const reached = sorted.filter((s) => s.amount <= total);
+  const ahead = sorted.filter((s) => s.amount > total);
+  const next = ahead[0] || null;
+  const from = reached.length ? reached[reached.length - 1].amount : 0;
+  const pct = next ? Math.max(0, Math.min(100, ((total - from) / (next.amount - from)) * 100)) : 100;
+  return { sorted, reached, ahead, next, from, pct, left: next ? next.amount - total : 0 };
+}
+
+export function stationsCrossed(stations, before, after) {
+  return stations.filter((s) => s.amount > before && s.amount <= after).sort((a, b) => a.amount - b.amount);
+}
+
+const median = (values) => {
+  const v = [...values].sort((a, b) => a - b);
+  if (!v.length) return 0;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+const percentile = (values, p) => {
+  const v = [...values].sort((a, b) => a - b);
+  if (!v.length) return 0;
+  return v[Math.min(v.length - 1, Math.ceil(p * v.length) - 1)];
+};
+const ceilTo = (n, step) => Math.ceil(n / step) * step;
+
+// closedMonths: newest first, each { id, lines: { catId: { spent, budget } } }
+export function categoryHistory(closedMonths, category) {
+  return closedMonths.slice(0, 6)
+    .map((m) => ({ id: m.id, ...(m.lines?.[category.id] || {}) }))
+    .filter((r) => typeof r.spent === "number" && !(category.freq === "two" && r.spent === 0));
+}
+
+export function insights(closedMonths, categories, { snoozed = {}, currentId = "" } = {}) {
+  const recs = [];
+  categories.filter((c) => c.type !== "fixed").forEach((cat) => {
+    if (snoozed[cat.id] && snoozed[cat.id] > currentId) return;
+    const history = categoryHistory(closedMonths, cat);
+    if (history.length < 3) return;
+    const budget = Number(cat.amount) || 0;
+    const gap = Math.max(budget * 0.05, 30);
+    const under = history.filter((r) => budget - r.spent >= gap).length;
+    const over = history.filter((r) => r.spent - budget >= gap).length;
+    const spentValues = history.map((r) => r.spent);
+    if (under >= 3) {
+      const target = Math.min(budget, ceilTo(Math.max(median(spentValues), percentile(spentValues, 0.75)), 50));
+      const diff = budget - target;
+      if (diff >= 30) recs.push({ kind: "reduce", category: cat, from: budget, to: target, diff, annual: diff * 12, count: under, months: history.length, history });
+    } else if (over >= 3) {
+      const target = ceilTo(median(spentValues), 50);
+      const diff = target - budget;
+      if (diff >= 30) recs.push({ kind: "raise", category: cat, from: budget, to: target, diff, annual: diff * 12, count: over, months: history.length, history });
+    }
+  });
+  return recs.sort((a, b) => b.annual - a.annual).slice(0, 2);
+}
+
+export function categoryAverages(closedMonths, categories) {
+  return categories.filter((c) => c.type !== "fixed").map((cat) => {
+    const history = categoryHistory(closedMonths, cat);
+    return { category: cat, months: history.length, median: Math.round(median(history.map((r) => r.spent))) };
+  }).filter((r) => r.months > 0);
 }
 
 export const FIXED_GROUPS = ["בית", "קופות", "ביטוחים ובריאות", "תקשורת ובידור", "כלים וענן", "ספורט וחברות", "אחר"];
