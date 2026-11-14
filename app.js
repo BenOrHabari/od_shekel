@@ -999,7 +999,7 @@ const savedSplit = () => ((Number(fundOf("safety")?.balance) || 0) >= SAFETY_TAR
 // ---------- notifications and export ----------
 
 // Public key from Firebase: Project settings > Cloud Messaging > Web Push certificates.
-const VAPID_KEY = "";
+const VAPID_KEY = "BBwZ1nm72XxByf92IqBFv0nKebeVtlzRPCAFVtUPZaNiRUGhwiCOIuf1zgCytSSx0HpJfpQ_RMpLVFIi8Qsdqys";
 
 async function enableNotifications() {
   try {
